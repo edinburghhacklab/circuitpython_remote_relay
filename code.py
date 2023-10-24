@@ -6,15 +6,18 @@ import os
 import socketpool
 import supervisor
 import ssl
+import time
 import watchdog
 import wifi
 
 import adafruit_logging as logging
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 
+esp_uid = binascii.hexlify(microcontroller.cpu.uid).decode("ascii")
+
 CIRCUITPY_WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID")
 CIRCUITPY_WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD")
-WIFI_HOSTNAME = os.getenv("WIFI_HOSTNAME", 'esp-{}'.format(binascii.hexlify(microcontroller.cpu.uid).decode("ascii")))
+WIFI_HOSTNAME = os.getenv("WIFI_HOSTNAME", 'esp-{esp_uid}')
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 if os.getenv("MQTT_TLS", "") in ["true", 1]:
@@ -24,6 +27,7 @@ else:
 MQTT_USERNAME = os.getenv("MQTT_USERNAME")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = os.getenv("MQTT_TOPIC")
+MQTT_DEBUG_TOPIC = os.getenv("MQTT_DEBUG_TOPIC", f"debug/esp-{esp_uid}")
 WATCHDOG_TIMEOUT = int(os.getenv("WATCHDOG_TIMEOUT", 180))
 
 supervisor.set_next_code_file(
@@ -42,6 +46,7 @@ relay.direction = digitalio.Direction.OUTPUT
 def handle_connect(client, userdata, flags, rc):
     print(f"Connected to MQTT {MQTT_HOST}:{MQTT_PORT}")
     client.subscribe(MQTT_TOPIC)
+    client.publish(MQTT_DEBUG_TOPIC, f"connected, {supervisor.runtime.run_reason} {supervisor.get_previous_traceback()}")
 
 
 def handle_disconnect(client, userdata, rc):
@@ -52,10 +57,12 @@ def handle_message(client, topic, message):
     if message == "1":
         if not relay.value:
             relay.value = True
+            client.publish(MQTT_DEBUG_TOPIC, "on")
             print("on")
     else:
         if relay.value:
             relay.value = False
+            client.publish(MQTT_DEBUG_TOPIC, "off")
             print("off")
 
 
@@ -78,12 +85,14 @@ def main():
         is_ssl=MQTT_TLS,
         ssl_context=ssl_context,
         socket_timeout=0.1,
+        client_id=esp_uid,
     )
 
     mqtt_client.enable_logger(logging)
     mqtt_client.on_connect = handle_connect
     mqtt_client.on_disconnect = handle_disconnect
     mqtt_client.on_message = handle_message
+    mqtt_client.will_set(MQTT_DEBUG_TOPIC, "disconnected")
     mqtt_client.connect()
 
     while True:
@@ -94,8 +103,4 @@ wdt = microcontroller.watchdog
 wdt.timeout = WATCHDOG_TIMEOUT
 wdt.mode = watchdog.WatchDogMode.RESET
 
-while True:
-    try:
-        main()
-    except Exception as e:
-        print("Exception:", e)
+main()
